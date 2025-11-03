@@ -2,8 +2,10 @@ import os
 import time
 import logging
 import requests
+import re
 from bs4 import BeautifulSoup
-from telegram.ext import Updater
+from telegram import Bot
+from telegram.ext import Application
 import schedule
 from redis import Redis
 from googletrans import Translator
@@ -12,20 +14,17 @@ from googletrans import Translator
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Токен
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# ТОКЕН И КАНАЛЫ
+TOKEN = os.getenv("TOKEN")
+CHAN1 = int(os.environ.get('CHAN1', 0))  # @time_n_John
+CHAN2 = int(os.environ.get('CHAN2', 0))  # @finanosint
+REDIS_URL = os.environ.get('REDIS_URL')
 
-# Каналы (из env)
-CHAN1 = int(os.environ.get('CHAN1', 0))   # @time_n_John
-CHAN2 = int(os.environ.get('CHAN2', 0))   # @finanosint
-
-# Redis
-r = Redis.from_url(os.environ.get('REDIS_URL')) if os.environ.get('REDIS_URL') else None
-
-# Переводчик
+# Redis + Переводчик
+r = Redis.from_url(REDIS_URL) if REDIS_URL else None
 tr = Translator()
+bot = Bot(TOKEN)
 
-# 19 источников
 SOURCES = [
     {"n": "Good Judgment", "u": "https://goodjudgment.com/open-questions/", "s": ".question-title a", "b": "https://goodjudgment.com"},
     {"n": "Johns Hopkins", "u": "https://centerforhealthsecurity.org/news/", "s": "h3.post-title a", "b": "https://centerforhealthsecurity.org"},
@@ -101,12 +100,17 @@ r"\bwho\b", r"\bвоз\b", r"\bcdc\b", r"\bроспотребнадзор\b",
 r"\binfection rate\b", r"\bзаразность\b", r"\b死亡率\b",
 r"\bhospitalization\b", r"\bгоспитализация\b",
 r"\bقبل ساعات\b", r"\b刚刚报告\b"]
+
+def match_keywords(text):
+    return any(re.search(kw, text, re.IGNORECASE) for kw in KEYWORDS)
+
 def get_lead(url):
     try:
-        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-        s = BeautifulSoup(r.text, 'html.parser')
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get(url, headers=headers, timeout=8)
+        soup = BeautifulSoup(resp.text, 'html.parser')
         for sel in ['.lead', 'p:first-of-type', '.summary', '.article-body p', 'p']:
-            p = s.select_one(sel)
+            p = soup.select_one(sel)
             if p and 30 < len(p.text) < 400:
                 return p.text.strip()[:300]
         return ''
@@ -115,9 +119,10 @@ def get_lead(url):
 
 def collect():
     news = []
+    headers = {'User-Agent': 'Mozilla/5.0'}
     for src in SOURCES:
         try:
-            resp = requests.get(src['u'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+            resp = requests.get(src['u'], headers=headers, timeout=10)
             soup = BeautifulSoup(resp.text, 'html.parser')
             for h in soup.select(src['s'])[:2]:
                 title = h.get_text(strip=True)
@@ -127,22 +132,28 @@ def collect():
                 if not link.startswith('http'):
                     link = src['b'].rstrip('/') + '/' + link.lstrip('/')
                 if r and r.sismember('seen', link): continue
+
                 lead = get_lead(link)
+                full_text = title + ' ' + lead
+
+                if not match_keywords(full_text):
+                    continue  # пропускаем нерелевантное
+
                 news.append({'t': title, 'l': lead, 'url': link, 'src': src['n']})
                 if r: r.sadd('seen', link)
         except Exception as e:
             log.error(f"{src['n']}: {e}")
     return news
 
-def send(context):
+async def send_news():
     if CHAN1 == 0 or CHAN2 == 0:
-        log.error("Укажи CHAN1 и CHAN2 в env!")
+        log.error("Укажи CHAN1 и CHAN2 в Render → Environment!")
         return
     items = collect()
     if not items:
-        log.info("Новостей нет")
+        log.info("Новостей по теме нет")
         return
-    log.info(f"Найдено {len(items)} новостей")
+    log.info(f"Найдено {len(items)} РЕЛЕВАНТНЫХ новостей")
     for item in items:
         try:
             title_ru = tr.translate(item['t'], dest='ru').text
@@ -150,20 +161,17 @@ def send(context):
         except:
             title_ru, lead_ru = item['t'], item['l']
         msg = f"**{item['src'].upper()}**: {title_ru}\n{lead_ru}\nИсточник: {item['url']}"
-        # ОТПРАВЛЯЕМ В ОБОИ КАНАЛА ОДИНАКОВО
-        context.bot.send_message(CHAN1, msg, parse_mode='Markdown')
-        context.bot.send_message(CHAN2, msg, parse_mode='Markdown')
-        log.info(f"Отправлено: {title_ru[:40]}...")
-        time.sleep(50)  # 50 сек между новостями
+        await bot.send_message(CHAN1, msg, parse_mode='Markdown')
+        await bot.send_message(CHAN2, msg, parse_mode='Markdown')
+        log.info(f"Отправлено: {title_ru[:50]}")
+        time.sleep(50)
 
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    schedule.every(14).minutes.do(send, updater.job_queue)
-    updater.start_polling()
-    log.info("Бот запущен! Дублирует в два канала каждые 15 мин.")
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+async def main():
+    app = Application.builder().token(TOKEN).build()
+    app.job_queue.run_repeating(send_news, interval=900, first=30)  # каждые 15 мин
+    log.info("БОТ ЗАПУЩЕН! Ищет новости по 100+ ключам → 2 канала")
+    await app.run_polling()
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())
