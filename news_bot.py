@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # Токен
-TOKEN = "8325055385:AAH9MfCjpfBNeDSrybE2SKwunDw7QjayQAM"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # Каналы (из env)
 CHAN1 = int(os.environ.get('CHAN1', 0))   # @time_n_John
