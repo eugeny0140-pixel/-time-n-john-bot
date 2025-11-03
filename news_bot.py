@@ -1,5 +1,3 @@
-
-
 import os
 import time
 import logging
@@ -14,14 +12,14 @@ from googletrans import Translator
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-TOKEN = "os.getenv("TOKEN")"
-CHAN1 = int(os.environ.get('CHAN1', 0))
-CHAN2 = int(os.environ.get('CHAN2', 0))
-REDIS_URL = os.environ.get('REDIS_URL')
+# ТОКЕН ТЕПЕРЬ ТОЛЬКО ИЗ RENDER!
+TOKEN = os.getenv("BOT_TOKEN")
+CHAN1 = int(os.getenv('CHAN1', '0'))
+CHAN2 = int(os.getenv('CHAN2', '0'))
+REDIS_URL = os.getenv('REDIS_URL')
 
 r = Redis.from_url(REDIS_URL) if REDIS_URL else None
 tr = Translator()
-bot = Bot(TOKEN)
 
 SOURCES = [
     {"n": "Good Judgment", "u": "https://goodjudgment.com/open-questions/", "s": ".question-title a", "b": "https://goodjudgment.com"},
@@ -46,23 +44,20 @@ SOURCES = [
 ]
 
 KEYWORDS = [
-    r"\brussia\b", r"\bukraine\b", r"\bputin\b", r"\bzelensky\b", r"\bsanctions?\b",
+    r"\brussia\b", r"\bukraine\b", r"\bputin\b", r"\bzelensky\b", r"\bsanction",
     r"\bsvo\b", r"\bвойна\b", r"\bwar\b", r"\battack\b", r"\bdrone\b", r"\bmissile\b",
     r"\bbitcoin\b", r"\bbtc\b", r"\bethereum\b", r"\bcrypto\b", r"\bcbdc\b",
     r"\bpandemic\b", r"\bvaccine\b", r"\bvirus\b", r"\blab leak\b"
 ]
 
-def match(text):
-    return any(re.search(k, text, re.I) for k in KEYWORDS)
-
+def match(text): return any(re.search(k, text, re.I) for k in KEYWORDS)
 def get_lead(url):
     try:
         r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
         s = BeautifulSoup(r.text, 'html.parser')
-        p = s.select_one('p, .lead, .summary')
-        return p.text.strip()[:300] if p else ''
-    except:
-        return ''
+        p = s.find('p') or s.find('.lead') or s.find('.summary')
+        return p.get_text(strip=True)[:300] if p else ''
+    except: return ''
 
 def collect():
     news = []
@@ -72,26 +67,28 @@ def collect():
             soup = BeautifulSoup(resp.text, 'html.parser')
             for h in soup.select(src['s'])[:2]:
                 title = h.get_text(strip=True)
-                link = h['href'] if h.name == 'a' else h.find('a')['href']
-                if not link or not title: continue
+                a = h if h.name == 'a' else h.find('a')
+                if not a: continue
+                link = a['href']
                 if not link.startswith('http'):
                     link = src['b'].rstrip('/') + '/' + link.lstrip('/')
                 if r and r.sismember('seen', link): continue
                 lead = get_lead(link)
-                if not match(title + lead): continue
+                if not match(title + ' ' + lead): continue
                 news.append({'t': title, 'l': lead, 'url': link, 'src': src['n']})
                 if r: r.sadd('seen', link)
         except: pass
     return news
 
-async def send():
+async def job(context):
     if not CHAN1 or not CHAN2:
-        log.error("Укажи CHAN1 и CHAN2!")
+        log.error("CHAN1/CHAN2 не указаны!")
         return
     items = collect()
     if not items:
-        log.info("Новостей нет")
+        log.info("Новостей по теме нет")
         return
+    log.info(f"Найдено {len(items)} новостей")
     for item in items:
         try:
             t = tr.translate(item['t'], dest='ru').text
@@ -99,15 +96,15 @@ async def send():
         except:
             t, l = item['t'], item['l']
         msg = f"**{item['src'].upper()}**: {t}\n{l}\nИсточник: {item['url']}"
-        await bot.send_message(CHAN1, msg, parse_mode='Markdown')
-        await bot.send_message(CHAN2, msg, parse_mode='Markdown')
+        await context.bot.send_message(CHAN1, msg, parse_mode='Markdown')
+        await context.bot.send_message(CHAN2, msg, parse_mode='Markdown')
         log.info(f"ОТПРАВЛЕНО: {t[:40]}")
         time.sleep(50)
 
 async def main():
     app = Application.builder().token(TOKEN).build()
-    app.job_queue.run_repeating(send, interval=900, first=30)
-    log.info("БОТ ЗАПУЩЕН! 19 источников → 2 канала → 15 мин")
+    app.job_queue.run_repeating(job, interval=900, first=10)
+    log.info("БОТ ЗАПУЩЕН! 19 источников → 2 канала → каждые 15 минут")
     await app.run_polling()
 
 if __name__ == '__main__':
