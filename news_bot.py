@@ -1,3 +1,5 @@
+
+
 import os
 import time
 import logging
@@ -6,14 +8,12 @@ import re
 from bs4 import BeautifulSoup
 from telegram import Bot
 from telegram.ext import Application
-import schedule
 from redis import Redis
 from googletrans import Translator
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# ТОКЕН (можно из env, но проще так)
 TOKEN = "os.getenv("TOKEN")"
 CHAN1 = int(os.environ.get('CHAN1', 0))
 CHAN2 = int(os.environ.get('CHAN2', 0))
