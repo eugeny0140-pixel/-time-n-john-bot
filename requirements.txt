@@ -1,0 +1,6 @@
+python-telegram-bot==13.7
+requests
+beautifulsoup4
+schedule
+redis
+googletrans==4.0.0-rc1
